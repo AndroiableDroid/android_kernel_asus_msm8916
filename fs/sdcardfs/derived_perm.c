@@ -26,29 +26,26 @@ static void inherit_derived_state(struct inode *parent, struct inode *child)
 	struct sdcardfs_inode_info *pi = SDCARDFS_I(parent);
 	struct sdcardfs_inode_info *ci = SDCARDFS_I(child);
 
-	ci->perm = PERM_INHERIT;
-	ci->userid = pi->userid;
-	ci->d_uid = pi->d_uid;
-	ci->under_android = pi->under_android;
-	ci->under_cache = pi->under_cache;
-	ci->under_obb = pi->under_obb;
-	set_top(ci, pi->top);
+	ci->data->perm = PERM_INHERIT;
+	ci->data->userid = pi->data->userid;
+	ci->data->d_uid = pi->data->d_uid;
+	ci->data->under_android = pi->data->under_android;
+	ci->data->under_cache = pi->data->under_cache;
+	ci->data->under_obb = pi->data->under_obb;
 }
 
 /* helper function for derived state */
 void setup_derived_state(struct inode *inode, perm_t perm, userid_t userid,
-						uid_t uid, bool under_android,
-						struct inode *top)
+					uid_t uid)
 {
 	struct sdcardfs_inode_info *info = SDCARDFS_I(inode);
 
-	info->perm = perm;
-	info->userid = userid;
-	info->d_uid = uid;
-	info->under_android = under_android;
-	info->under_cache = false;
-	info->under_obb = false;
-	set_top(info, top);
+	info->data->perm = perm;
+	info->data->userid = userid;
+	info->data->d_uid = uid;
+	info->data->under_android = false;
+	info->data->under_cache = false;
+	info->data->under_obb = false;
 }
 
 /* While renaming, there is a point where we want the path from dentry,
@@ -59,6 +56,7 @@ void get_derived_permission_new(struct dentry *parent, struct dentry *dentry,
 {
 	struct sdcardfs_inode_info *info = SDCARDFS_I(dentry->d_inode);
 	struct sdcardfs_inode_info *parent_info = SDCARDFS_I(parent->d_inode);
+	struct sdcardfs_inode_data *parent_data = parent_info->data;
 	appid_t appid;
 	unsigned long user_num;
 	int err;
@@ -79,13 +77,15 @@ void get_derived_permission_new(struct dentry *parent, struct dentry *dentry,
 	inherit_derived_state(parent->d_inode, dentry->d_inode);
 
 	/* Files don't get special labels */
-	if (!S_ISDIR(dentry->d_inode->i_mode))
+	if (!S_ISDIR(dentry->d_inode->i_mode)) {
+		set_top(info, parent_info);
 		return;
+	}
 	/* Derive custom permissions based on parent and current node */
 	switch (parent_info->perm) {
 	case PERM_INHERIT:
 	case PERM_ANDROID_PACKAGE_CACHE:
-		/* Already inherited above */
+		set_top(info, parent_info);
 		break;
 	case PERM_PRE_ROOT:
 		/* Legacy internal layout places users at top level */
@@ -94,33 +94,32 @@ void get_derived_permission_new(struct dentry *parent, struct dentry *dentry,
 		if (err)
 			info->userid = 0;
 		else
-			info->userid = user_num;
-		set_top(info, &info->vfs_inode);
+			info->data->userid = user_num;
 		break;
 	case PERM_ROOT:
 		/* Assume masked off by default. */
 		if (qstr_case_eq(name, &q_Android)) {
 			/* App-specific directories inside; let anyone traverse */
-			info->perm = PERM_ANDROID;
-			info->under_android = true;
-			set_top(info, &info->vfs_inode);
+			info->data->perm = PERM_ANDROID;
+			info->data->under_android = true;
+		} else {
+			set_top(info, parent_info);
 		}
 		break;
 	case PERM_ANDROID:
 		if (qstr_case_eq(name, &q_data)) {
 			/* App-specific directories inside; let anyone traverse */
-			info->perm = PERM_ANDROID_DATA;
-			set_top(info, &info->vfs_inode);
+			info->data->perm = PERM_ANDROID_DATA;
 		} else if (qstr_case_eq(name, &q_obb)) {
 			/* App-specific directories inside; let anyone traverse */
-			info->perm = PERM_ANDROID_OBB;
-			info->under_obb = true;
-			set_top(info, &info->vfs_inode);
+			info->data->perm = PERM_ANDROID_OBB;
+			info->data->under_obb = true;
 			/* Single OBB directory is always shared */
 		} else if (qstr_case_eq(name, &q_media)) {
 			/* App-specific directories inside; let anyone traverse */
-			info->perm = PERM_ANDROID_MEDIA;
-			set_top(info, &info->vfs_inode);
+			info->data->perm = PERM_ANDROID_MEDIA;
+		} else {
+			set_top(info, parent_info);
 		}
 		break;
 	case PERM_ANDROID_OBB:
@@ -128,15 +127,16 @@ void get_derived_permission_new(struct dentry *parent, struct dentry *dentry,
 	case PERM_ANDROID_MEDIA:
 		info->perm = PERM_ANDROID_PACKAGE;
 		appid = get_appid(name->name);
-		if (appid != 0 && !is_excluded(name->name, parent_info->userid))
-			info->d_uid = multiuser_get_uid(parent_info->userid, appid);
-		set_top(info, &info->vfs_inode);
+		if (appid != 0 && !is_excluded(name->name, parent_data->userid))
+			info->data->d_uid =
+				multiuser_get_uid(parent_data->userid, appid);
 		break;
 	case PERM_ANDROID_PACKAGE:
 		if (qstr_case_eq(name, &q_cache)) {
 			info->perm = PERM_ANDROID_PACKAGE_CACHE;
 			info->under_cache = true;
 		}
+		set_top(info, parent_info);
 		break;
 	}
 }

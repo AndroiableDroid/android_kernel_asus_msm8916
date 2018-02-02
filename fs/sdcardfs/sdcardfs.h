@@ -189,7 +189,8 @@ struct sdcardfs_inode_info {
 	bool under_cache;
 	bool under_obb;
 	/* top folder for ownership */
-	struct inode *top;
+	spinlock_t top_lock;
+	struct sdcardfs_inode_data *top_data;
 
 	struct inode vfs_inode;
 };
@@ -359,15 +360,12 @@ static inline bool sbinfo_has_sdcard_magic(struct sdcardfs_sb_info *sbinfo)
 /* grab a refererence if we aren't linking to ourself */
 static inline void set_top(struct sdcardfs_inode_info *info, struct inode *top)
 {
-	struct inode *old_top = NULL;
+	struct sdcardfs_inode_data *top_data;
 
-	BUG_ON(IS_ERR_OR_NULL(top));
-	if (info->top && info->top != &info->vfs_inode)
-		old_top = info->top;
-	if (top != &info->vfs_inode)
-		igrab(top);
-	info->top = top;
-	iput(old_top);
+	spin_lock(&info->top_lock);
+	top_data = data_get(info->top_data);
+	spin_unlock(&info->top_lock);
+	return top_data;
 }
 
 static inline struct inode *grab_top(struct sdcardfs_inode_info *info)
@@ -380,9 +378,21 @@ static inline struct inode *grab_top(struct sdcardfs_inode_info *info)
 		return NULL;
 }
 
-static inline void release_top(struct sdcardfs_inode_info *info)
+static inline void set_top(struct sdcardfs_inode_info *info,
+			struct sdcardfs_inode_info *top_owner)
 {
-	iput(info->top);
+	struct sdcardfs_inode_data *old_top;
+	struct sdcardfs_inode_data *new_top = NULL;
+
+	if (top_owner)
+		new_top = top_data_get(top_owner);
+
+	spin_lock(&info->top_lock);
+	old_top = info->top_data;
+	info->top_data = new_top;
+	if (old_top)
+		data_put(old_top);
+	spin_unlock(&info->top_lock);
 }
 
 static inline int get_gid(struct vfsmount *mnt,
@@ -485,8 +495,8 @@ struct limit_search {
 	userid_t userid;
 };
 
-extern void setup_derived_state(struct inode *inode, perm_t perm, userid_t userid,
-			uid_t uid, bool under_android, struct inode *top);
+extern void setup_derived_state(struct inode *inode, perm_t perm,
+			userid_t userid, uid_t uid);
 extern void get_derived_permission(struct dentry *parent, struct dentry *dentry);
 extern void get_derived_permission_new(struct dentry *parent, struct dentry *dentry, const struct qstr *name);
 extern void fixup_perms_recursive(struct dentry *dentry, struct limit_search *limit);

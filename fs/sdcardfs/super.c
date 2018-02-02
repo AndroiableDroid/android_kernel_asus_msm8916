@@ -188,6 +188,19 @@ static struct inode *sdcardfs_alloc_inode(struct super_block *sb)
 	/* memset everything up to the inode to 0 */
 	memset(i, 0, offsetof(struct sdcardfs_inode_info, vfs_inode));
 
+	d = kmem_cache_alloc(sdcardfs_inode_data_cachep,
+					GFP_KERNEL | __GFP_ZERO);
+	if (!d) {
+		kmem_cache_free(sdcardfs_inode_cachep, i);
+		return NULL;
+	}
+
+	i->data = d;
+	kref_init(&d->refcount);
+	i->top_data = d;
+	spin_lock_init(&i->top_lock);
+	kref_get(&d->refcount);
+
 	i->vfs_inode.i_version = 1;
 	return &i->vfs_inode;
 }
